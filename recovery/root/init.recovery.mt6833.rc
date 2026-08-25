@@ -102,3 +102,11 @@ on property:twrp.decrypt.done=true
 
 on boot
     start health-hal-2-1
+
+service touch_wake_fix /sbin/touch_wake_fix.sh
+    class core
+    user root
+    group root
+    disabled
+    oneshot
+    seclabel u:r:recovery:s0
