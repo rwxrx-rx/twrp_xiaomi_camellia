@@ -33,6 +33,7 @@ env:
   DEVICE: camellia
   VENDOR: xiaomi
   LUNCH: twrp_camellia-eng
+  TWRP_ROOT: /home/runner/twrp
   CCACHE_DIR: ${{ github.workspace }}/.ccache
   CCACHE_SIZE: 20G
 
@@ -46,22 +47,18 @@ jobs:
         uses: easimon/maximize-build-space@master
         with:
           root-reserve-mb: 8192
-          swap-size-mb: 8192
+          swap-size-mb: 4096
           remove-dotnet: true
           remove-android: true
           remove-haskell: true
           remove-codeql: true
-          # NEVER point this at /home/runner/work — that's where the runner
-          # keeps _actions (the already-downloaded actions, e.g. actions/cache).
-          # Remounting over it wipes those files mid-job and every action
-          # after this step fails with "Can't find 'action.yml' ...".
-          build-mount-path: /home/runner/build-space
-
-      - name: Redirect build dir to the new mount
-        run: |
-          sudo mkdir -p /home/runner/build-space/twrp
-          sudo chown -R "$USER":"$USER" /home/runner/build-space
-          echo "TWRP_ROOT=/home/runner/build-space/twrp" >> "$GITHUB_ENV"
+          # Deliberately NOT setting build-mount-path: leaving it unset makes
+          # the action grow the root filesystem in place (using space
+          # reclaimed from the removed toolchains + the extra temp disk),
+          # instead of diverting that space to a brand-new mount. That
+          # in-place growth is also what keeps /home/runner/work/_actions
+          # (the runner's already-downloaded actions, e.g. actions/cache)
+          # intact — a separate mount pointed there was what wiped it before.
 
       - name: Install build dependencies
         run: |
