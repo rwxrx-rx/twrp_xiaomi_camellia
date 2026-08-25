@@ -51,7 +51,17 @@ jobs:
           remove-android: true
           remove-haskell: true
           remove-codeql: true
-          build-mount-path: /home/runner/work
+          # NEVER point this at /home/runner/work — that's where the runner
+          # keeps _actions (the already-downloaded actions, e.g. actions/cache).
+          # Remounting over it wipes those files mid-job and every action
+          # after this step fails with "Can't find 'action.yml' ...".
+          build-mount-path: /home/runner/build-space
+
+      - name: Redirect build dir to the new mount
+        run: |
+          sudo mkdir -p /home/runner/build-space/twrp
+          sudo chown -R "$USER":"$USER" /home/runner/build-space
+          echo "TWRP_ROOT=/home/runner/build-space/twrp" >> "$GITHUB_ENV"
 
       - name: Install build dependencies
         run: |
@@ -87,14 +97,14 @@ jobs:
 
       - name: Init minimal manifest
         run: |
-          mkdir -p ~/twrp && cd ~/twrp
+          mkdir -p $TWRP_ROOT && cd $TWRP_ROOT
           repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git \
             -b ${{ github.event.inputs.manifest_branch }} --depth=1
 
       - name: Add local manifest for device/kernel trees
         run: |
-          mkdir -p ~/twrp/.repo/local_manifests
-          cat > ~/twrp/.repo/local_manifests/camellia.xml << EOF
+          mkdir -p $TWRP_ROOT/.repo/local_manifests
+          cat > $TWRP_ROOT/.repo/local_manifests/camellia.xml << EOF
           <?xml version="1.0" encoding="UTF-8"?>
           <manifest>
             <remote name="device_tree" fetch="$(dirname "${{ github.event.inputs.device_tree_url }}")" />
@@ -107,7 +117,7 @@ jobs:
 
       - name: Repo sync
         run: |
-          cd ~/twrp
+          cd $TWRP_ROOT
           repo sync -c -j$(nproc --all) --force-sync --no-clone-bundle --no-tags --optimized-fetch
 
       - name: Set up ccache
@@ -118,7 +128,7 @@ jobs:
 
       - name: Build recovery
         run: |
-          cd ~/twrp
+          cd $TWRP_ROOT
           export ALLOW_MISSING_DEPENDENCIES=true
           export USE_CCACHE=1
           source build/envsetup.sh
@@ -128,7 +138,7 @@ jobs:
       - name: Collect build output
         id: collect
         run: |
-          cd ~/twrp
+          cd $TWRP_ROOT
           OUT_DIR=out/target/product/${{ env.DEVICE }}
           mkdir -p "${{ github.workspace }}/upload"
           IMG=$(ls -t "$OUT_DIR"/recovery.img "$OUT_DIR"/boot.img 2>/dev/null | head -n1)
