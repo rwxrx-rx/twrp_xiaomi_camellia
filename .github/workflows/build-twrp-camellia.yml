@@ -1,0 +1,164 @@
+name: Build TWRP - camellia
+
+on:
+  workflow_dispatch:
+    inputs:
+      manifest_branch:
+        description: "Minimal manifest branch"
+        required: true
+        default: "twrp-12.1"
+      device_tree_url:
+        description: "Device tree repo URL"
+        required: true
+        default: "https://github.com/<you>/twrp_device_xiaomi_camellia"
+      device_tree_branch:
+        description: "Device tree branch"
+        required: true
+        default: "main"
+      build_target:
+        description: "Make target"
+        required: true
+        default: "recoveryimage"
+        type: choice
+        options:
+          - recoveryimage
+          - bootimage
+      release:
+        description: "Publish a GitHub Release with the build"
+        required: true
+        default: true
+        type: boolean
+
+env:
+  DEVICE: camellia
+  VENDOR: xiaomi
+  LUNCH: twrp_camellia-eng
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+  CCACHE_SIZE: 20G
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Free up disk space
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 8192
+          swap-size-mb: 8192
+          remove-dotnet: true
+          remove-android: true
+          remove-haskell: true
+          remove-codeql: true
+          build-mount-path: /home/runner/work
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison build-essential ccache curl flex g++-multilib \
+            gcc-multilib git git-lfs gnupg gperf imagemagick lib32ncurses5-dev \
+            lib32readline-dev lib32z1-dev liblz4-tool libncurses5 libncurses5-dev \
+            libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush \
+            rsync schedtool squashfs-tools xsltproc zip zlib1g-dev \
+            python3 python3-pip openjdk-8-jdk
+
+      - name: Install repo tool
+        run: |
+          mkdir -p ~/.bin
+          curl -o ~/.bin/repo https://storage.googleapis.com/git-repo-downloads/repo
+          chmod a+x ~/.bin/repo
+          echo "$HOME/.bin" >> "$GITHUB_PATH"
+
+      - name: Configure git identity
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "actions@github.com"
+          git config --global color.ui false
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ env.DEVICE }}-${{ github.event.inputs.manifest_branch }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-${{ env.DEVICE }}-${{ github.event.inputs.manifest_branch }}-
+
+      - name: Init minimal manifest
+        run: |
+          mkdir -p ~/twrp && cd ~/twrp
+          repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git \
+            -b ${{ github.event.inputs.manifest_branch }} --depth=1
+
+      - name: Add local manifest for device/kernel trees
+        run: |
+          mkdir -p ~/twrp/.repo/local_manifests
+          cat > ~/twrp/.repo/local_manifests/camellia.xml << EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <manifest>
+            <remote name="device_tree" fetch="$(dirname "${{ github.event.inputs.device_tree_url }}")" />
+            <project name="$(basename "${{ github.event.inputs.device_tree_url }}")"
+                     path="device/${{ env.VENDOR }}/${{ env.DEVICE }}"
+                     remote="device_tree"
+                     revision="${{ github.event.inputs.device_tree_branch }}" />
+          </manifest>
+          EOF
+
+      - name: Repo sync
+        run: |
+          cd ~/twrp
+          repo sync -c -j$(nproc --all) --force-sync --no-clone-bundle --no-tags --optimized-fetch
+
+      - name: Set up ccache
+        run: |
+          export USE_CCACHE=1
+          export CCACHE_EXEC=$(command -v ccache)
+          ccache -M ${{ env.CCACHE_SIZE }}
+
+      - name: Build recovery
+        run: |
+          cd ~/twrp
+          export ALLOW_MISSING_DEPENDENCIES=true
+          export USE_CCACHE=1
+          source build/envsetup.sh
+          lunch ${{ env.LUNCH }}
+          mka ${{ github.event.inputs.build_target }} -j$(nproc --all)
+
+      - name: Collect build output
+        id: collect
+        run: |
+          cd ~/twrp
+          OUT_DIR=out/target/product/${{ env.DEVICE }}
+          mkdir -p "${{ github.workspace }}/upload"
+          IMG=$(ls -t "$OUT_DIR"/recovery.img "$OUT_DIR"/boot.img 2>/dev/null | head -n1)
+          if [ -z "$IMG" ]; then
+            echo "No output image found in $OUT_DIR" >&2
+            exit 1
+          fi
+          NAME="TWRP-${{ env.DEVICE }}-$(date +%Y%m%d-%H%M).img"
+          cp "$IMG" "${{ github.workspace }}/upload/$NAME"
+          echo "image_name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "image_path=${{ github.workspace }}/upload/$NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.collect.outputs.image_name }}
+          path: ${{ steps.collect.outputs.image_path }}
+          retention-days: 14
+
+      - name: Publish GitHub Release
+        if: ${{ github.event.inputs.release == 'true' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: twrp-camellia-${{ github.run_number }}
+          name: TWRP camellia build ${{ github.run_number }}
+          files: ${{ steps.collect.outputs.image_path }}
+          body: |
+            Automated TWRP build for camellia (Redmi Note 10 5G / POCO M3 Pro 5G).
+            Manifest branch: ${{ github.event.inputs.manifest_branch }}
+            Device tree: ${{ github.event.inputs.device_tree_url }} @ ${{ github.event.inputs.device_tree_branch }}
+            Target: ${{ github.event.inputs.build_target }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
