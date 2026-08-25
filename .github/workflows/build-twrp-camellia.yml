@@ -1,171 +1,176 @@
-name: Build TWRP - camellia
+name: Recovery Build - Camellia
 
 on:
   workflow_dispatch:
     inputs:
-      manifest_branch:
-        description: "Minimal manifest branch"
+      MANIFEST_URL:
+        description: 'MANIFEST_URL (if want to use SSH keys, use git@github.com:XXXXX)'
         required: true
-        default: "twrp-12.1"
-      device_tree_url:
-        description: "Device tree repo URL"
+        default: 'https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp'
+      MANIFEST_BRANCH:
+        description: 'MANIFEST_BRANCH'
         required: true
-        default: "https://github.com/<you>/twrp_device_xiaomi_camellia"
-      device_tree_branch:
-        description: "Device tree branch"
+        default: 'twrp-12.1'
+      DEVICE_TREE_URL:
+        description: 'DEVICE_TREE_URL'
         required: true
-        default: "main"
-      build_target:
-        description: "Make target"
+        default: 'https://github.com/rwxrx-rx/twrp_xiaomi_camellia'
+      DEVICE_TREE_BRANCH:
+        description: 'DEVICE_TREE_BRANCH'
         required: true
-        default: "recoveryimage"
-        type: choice
-        options:
-          - recoveryimage
-          - bootimage
-      release:
-        description: "Publish a GitHub Release with the build"
+        default: '12.1'
+      DEVICE_PATH:
+        description: 'DEVICE_PATH'
         required: true
-        default: true
-        type: boolean
-
-env:
-  DEVICE: camellia
-  VENDOR: xiaomi
-  LUNCH: twrp_camellia-eng
-  TWRP_ROOT: /home/runner/twrp
-  CCACHE_DIR: ${{ github.workspace }}/.ccache
-  CCACHE_SIZE: 20G
+        default: 'device/xiaomi/camellia'
+      COMMON_TREE_URL:
+        description: 'COMMON_TREE_URL (if no common tree, leave blank)'
+        required: false
+      COMMON_PATH:
+        description: 'COMMON_PATH (if no common tree, leave blank)'
+        required: false
+      DEVICE_NAME:
+        description: 'DEVICE_NAME'
+        required: true
+        default: 'camellia'
+      MAKEFILE_NAME:
+        description: 'MAKEFILE_NAME'
+        required: true
+        default: 'twrp_camellia'
+      BUILD_TARGET:
+        description: 'BUILD_TARGET'
+        required: true
+        default: 'boot'
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
-    timeout-minutes: 360
-
+    if: github.event.repository.owner.id == github.event.sender.id
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     steps:
-      - name: Free up disk space
-        uses: easimon/maximize-build-space@master
-        with:
-          root-reserve-mb: 8192
-          swap-size-mb: 4096
-          remove-dotnet: true
-          remove-android: true
-          remove-haskell: true
-          remove-codeql: true
-          # Deliberately NOT setting build-mount-path: leaving it unset makes
-          # the action grow the root filesystem in place (using space
-          # reclaimed from the removed toolchains + the extra temp disk),
-          # instead of diverting that space to a brand-new mount. That
-          # in-place growth is also what keeps /home/runner/work/_actions
-          # (the runner's already-downloaded actions, e.g. actions/cache)
-          # intact — a separate mount pointed there was what wiped it before.
+    - name: Display Run Parameters
+      run: |
+        echo "::group::User Environment Variables"
+        echo "Manifest URL: ${{ github.event.inputs.MANIFEST_URL }}"
+        echo "Manifest Branch: ${{ github.event.inputs.MANIFEST_BRANCH }}"
+        echo "Device Tree URL: ${{ github.event.inputs.DEVICE_TREE_URL }}"
+        echo "Device Tree Branch: ${{ github.event.inputs.DEVICE_TREE_BRANCH }}"
+        echo "Device Path: ${{ github.event.inputs.DEVICE_PATH }}"
+        echo "Device Name: ${{ github.event.inputs.DEVICE_NAME }}"
+        echo "Makefile Name: ${{ github.event.inputs.MAKEFILE_NAME }}"
+        echo "Build Target: ${{ github.event.inputs.BUILD_TARGET }}.img"
+        echo "::endgroup::"
 
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            bc bison build-essential ccache curl flex g++-multilib \
-            gcc-multilib git git-lfs gnupg gperf imagemagick lib32ncurses5-dev \
-            lib32readline-dev lib32z1-dev liblz4-tool libncurses5 libncurses5-dev \
-            libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush \
-            rsync schedtool squashfs-tools xsltproc zip zlib1g-dev \
-            python3 python3-pip openjdk-8-jdk
+    # You might want to Checkout your repo first, but not mandatory
+    - name: Check Out
+      uses: actions/checkout@v4
 
-      - name: Install repo tool
-        run: |
-          mkdir -p ~/.bin
-          curl -o ~/.bin/repo https://storage.googleapis.com/git-repo-downloads/repo
-          chmod a+x ~/.bin/repo
-          echo "$HOME/.bin" >> "$GITHUB_PATH"
+    # Cleanup The Actions Workspace Using Custom Composite Run Actions
+    - name: Cleanup
+      uses: rokibhasansagar/slimhub_actions@main
+      # That's it! Now use your normal steps
 
-      - name: Configure git identity
-        run: |
-          git config --global user.name "github-actions"
-          git config --global user.email "actions@github.com"
-          git config --global color.ui false
+    - name: Prepare the environment
+      run: |
+        sudo apt update && sudo apt upgrade -y
+        DEBIAN_FRONTEND=noninteractive sudo apt install -yq \
+            linux-modules-extra-$(uname -r) \
+            gperf gcc-multilib gcc-10-multilib g++-multilib g++-10-multilib \
+            libc6-dev lib32ncurses-dev x11proto-core-dev libx11-dev tree lib32z-dev libgl1-mesa-dev libxml2-utils \
+            xsltproc bc ccache lib32readline-dev lib32z1-dev liblz4-tool libncurses-dev libsdl1.2-dev \
+            build-essential libgtk-3-dev libglu1-mesa-dev freeglut3-dev git libxml2 lzop pngcrush schedtool squashfs-tools \
+            imagemagick libbz2-dev lzma ncftp qemu-user-static libstdc++-10-dev libncurses6 python3 tar
 
-      - name: Restore ccache
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.CCACHE_DIR }}
-          key: ccache-${{ env.DEVICE }}-${{ github.event.inputs.manifest_branch }}-${{ github.run_id }}
-          restore-keys: |
-            ccache-${{ env.DEVICE }}-${{ github.event.inputs.manifest_branch }}-
+    - name: Install OpenJDK
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'zulu'
+        java-version: '11'
 
-      - name: Init minimal manifest
-        run: |
-          mkdir -p $TWRP_ROOT && cd $TWRP_ROOT
-          repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git \
-            -b ${{ github.event.inputs.manifest_branch }} --depth=1
+    - name: Setup SSH Keys
+      if: ${{ startsWith(github.event.inputs.MANIFEST_URL, 'git@github.com') || 
+          startsWith(github.event.inputs.DEVICE_TREE_URL, 'git@github.com') ||
+          startsWith(github.event.inputs.COMMON_TREE_URL, 'git@github.com') }}
+      uses: webfactory/ssh-agent@v0.9.0
+      with:
+          ssh-private-key: |
+            ${{ secrets.SSH_PRIVATE_KEY }}
 
-      - name: Add local manifest for device/kernel trees
-        run: |
-          mkdir -p $TWRP_ROOT/.repo/local_manifests
-          cat > $TWRP_ROOT/.repo/local_manifests/camellia.xml << EOF
-          <?xml version="1.0" encoding="UTF-8"?>
-          <manifest>
-            <remote name="device_tree" fetch="$(dirname "${{ github.event.inputs.device_tree_url }}")" />
-            <project name="$(basename "${{ github.event.inputs.device_tree_url }}")"
-                     path="device/${{ env.VENDOR }}/${{ env.DEVICE }}"
-                     remote="device_tree"
-                     revision="${{ github.event.inputs.device_tree_branch }}" />
-          </manifest>
-          EOF
+    - name: Install repo
+      run: |
+        mkdir ~/bin
+        curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+        chmod a+x ~/bin/repo
+        sudo ln -sf ~/bin/repo /usr/bin/repo
 
-      - name: Repo sync
-        run: |
-          cd $TWRP_ROOT
-          repo sync -c -j$(nproc --all) --force-sync --no-clone-bundle --no-tags --optimized-fetch
+    - name: Initialize repo
+      run: |
+        mkdir workspace
+        cd workspace
+        echo "workspace-folder=$(pwd)" >> $GITHUB_OUTPUT
+        git config --global user.name "Nico170420"
+        git config --global user.email "b170420nc@gmail.com"
+        repo init --depth=1 -u ${{ github.event.inputs.MANIFEST_URL }} -b ${{ github.event.inputs.MANIFEST_BRANCH }}
+      id: pwd
 
-      - name: Set up ccache
-        run: |
-          export USE_CCACHE=1
-          export CCACHE_EXEC=$(command -v ccache)
-          ccache -M ${{ env.CCACHE_SIZE }}
+    - name: Repo Sync
+      run: |
+        repo sync -j$(nproc --all) --force-sync
+      working-directory: workspace
 
-      - name: Build recovery
-        run: |
-          cd $TWRP_ROOT
-          export ALLOW_MISSING_DEPENDENCIES=true
-          export USE_CCACHE=1
-          source build/envsetup.sh
-          lunch ${{ env.LUNCH }}
-          mka ${{ github.event.inputs.build_target }} -j$(nproc --all)
+    - name: Clone device tree
+      run: |
+        git clone ${{ github.event.inputs.DEVICE_TREE_URL }} -b ${{ github.event.inputs.DEVICE_TREE_BRANCH }} ./${{ github.event.inputs.DEVICE_PATH }}
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
-      - name: Collect build output
-        id: collect
-        run: |
-          cd $TWRP_ROOT
-          OUT_DIR=out/target/product/${{ env.DEVICE }}
-          mkdir -p "${{ github.workspace }}/upload"
-          IMG=$(ls -t "$OUT_DIR"/recovery.img "$OUT_DIR"/boot.img 2>/dev/null | head -n1)
-          if [ -z "$IMG" ]; then
-            echo "No output image found in $OUT_DIR" >&2
-            exit 1
-          fi
-          NAME="TWRP-${{ env.DEVICE }}-$(date +%Y%m%d-%H%M).img"
-          cp "$IMG" "${{ github.workspace }}/upload/$NAME"
-          echo "image_name=$NAME" >> "$GITHUB_OUTPUT"
-          echo "image_path=${{ github.workspace }}/upload/$NAME" >> "$GITHUB_OUTPUT"
+    - name: Clone common tree
+      if: |
+        github.event.inputs.COMMON_TREE_URL != null
+        && github.event.inputs.COMMON_PATH != null
+      run: |
+        git clone ${{ github.event.inputs.COMMON_TREE_URL }} -b ${{ github.event.inputs.DEVICE_TREE_BRANCH }} ./${{ github.event.inputs.COMMON_PATH }}
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ steps.collect.outputs.image_name }}
-          path: ${{ steps.collect.outputs.image_path }}
-          retention-days: 14
+    - name: Check Build Tree
+      uses: haya14busa/action-cond@v1
+      id: buildtree
+      with:
+        cond: ${{ github.event.inputs.MANIFEST_BRANCH == 'twrp-11' || github.event.inputs.MANIFEST_BRANCH == 'twrp-12.1' }}
+        if_true: twrp
+        if_false: omni
 
-      - name: Publish GitHub Release
-        if: ${{ github.event.inputs.release == 'true' }}
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: twrp-camellia-${{ github.run_number }}
-          name: TWRP camellia build ${{ github.run_number }}
-          files: ${{ steps.collect.outputs.image_path }}
-          body: |
-            Automated TWRP build for camellia (Redmi Note 10 5G / POCO M3 Pro 5G).
-            Manifest branch: ${{ github.event.inputs.manifest_branch }}
-            Device tree: ${{ github.event.inputs.device_tree_url }} @ ${{ github.event.inputs.device_tree_branch }}
-            Target: ${{ github.event.inputs.build_target }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Sync Device Dependencies
+      run: |
+        bash ${GITHUB_WORKSPACE}/scripts/convert.sh ${{ github.event.inputs.DEVICE_PATH }}/${{ steps.buildtree.outputs.value }}.dependencies
+        repo sync -j$(nproc --all)
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+      continue-on-error: true
+
+    - name: Set Swap Space
+      uses: pierotofy/set-swap-space@master
+      with:
+        swap-size-gb: 12
+
+    - name: Building recovery
+      run: |
+        source build/envsetup.sh
+        export ALLOW_MISSING_DEPENDENCIES=true
+        lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng && make clean && make ${{ github.event.inputs.BUILD_TARGET }}image -j$(nproc --all)
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+
+    - name: Upload to Release
+      uses: softprops/action-gh-release@v2
+      with:
+        files: | 
+          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/${{ github.event.inputs.BUILD_TARGET }}.img
+          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.zip
+          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*vendor*.img
+        name: ${{ github.event.inputs.DEVICE_NAME }}-${{ github.run_id }}
+        tag_name: ${{ github.run_id }}
+        body: |
+          Manifest: ${{ github.event.inputs.MANIFEST_BRANCH }}
+          Device: ${{ github.event.inputs.DEVICE_NAME }}
+          Target: ${{ github.event.inputs.BUILD_TARGET }}.img
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
